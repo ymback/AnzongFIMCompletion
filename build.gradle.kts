@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "gov.anzong.fim"
-version = "1.0-SNAPSHOT"
+version = "1.0.0"
 
 dependencies {
     intellijPlatform {
