@@ -28,12 +28,14 @@ object ContextManager {
 
         val rawPrefix = currentText.substring(0, offset)
         val rawSuffix = currentText.substring(offset)
+        val isEmptyBlock = rawPrefix.trimEnd().endsWith("{") && rawSuffix.trimStart().startsWith("}")
         val maxContext = settings.contextLength
         val projectBasePath = project.guessProjectDir()?.path ?: ""
 
         val lineEnd = currentText.indexOf('\n', offset).let { if (it == -1) currentText.length else it }
         val textAfterCaretInLine = currentText.substring(offset, lineEnd).trim()
-        val isSingleLine = textAfterCaretInLine.isNotEmpty()
+        val isSingleLine = textAfterCaretInLine.isNotEmpty() &&
+                !textAfterCaretInLine.all { it.isWhitespace() || it in ")]};," }
 
         // 1. 跨文件上下文 (按比例动态占用)
         val extraContext = StringBuilder()
@@ -78,11 +80,14 @@ object ContextManager {
                     var scopeEndOffset = -1
 
                     while (parent != null && parent !is com.intellij.psi.PsiFile) {
-                        if (parent.textRange.endOffset > offset + 5) {
+                        if (scopeEndOffset == -1 &&
+                            parent.textRange.startOffset <= offset &&
+                            parent.textRange.endOffset > offset
+                        ) {
                             scopeEndOffset = parent.textRange.endOffset
-                            if (parent is PsiNamedElement && structuralHint.isEmpty()) {
-                                structuralHint = parent.name ?: ""
-                            }
+                        }
+                        if (parent is PsiNamedElement && structuralHint.isEmpty()) {
+                            structuralHint = parent.name ?: ""
                         }
 
                         parent.children.forEach { child ->
@@ -105,6 +110,15 @@ object ContextManager {
 
         val currentRelPath = virtualFile?.path?.removePrefix("$projectBasePath/") ?: "Snippet"
         val ext = virtualFile?.extension
+        val caretLinePrefix = rawPrefix.substringAfterLast('\n')
+        val modelPrefix = if (isEmptyBlock && caretLinePrefix.isBlank()) {
+            rawPrefix.dropLast(caretLinePrefix.length) + buildCommentLine(
+                ext,
+                "FIM task: This block is incomplete. Generate a non-empty, type-correct implementation here. For a non-void function, include a return statement. Output only code to insert."
+            ) + "\n" + caretLinePrefix
+        } else {
+            rawPrefix
+        }
 
         // 4. 使用安全的闭合格式注入头部提示词
         val currentFileHeader = StringBuilder().apply {
@@ -114,23 +128,27 @@ object ContextManager {
             if (structuralHint.isNotEmpty()) append(buildCommentLine(ext, "Context: Inside `$structuralHint`")).append("\n")
             if (imports.isNotEmpty()) append(buildCommentLine(ext, "Imports available: ${imports.joinToString(" | ")}")).append("\n")
             if (visibleSymbols.isNotEmpty()) append(buildCommentLine(ext, "Visible symbols: ${visibleSymbols.distinct().take(20).joinToString(", ")}")).append("\n")
+            if (isEmptyBlock) {
+                append(buildCommentLine(ext, "Task: Fill the empty block with a useful, type-correct implementation inferred from the surrounding code. Output only the code to insert; do not output the existing closing brace.")).append("\n")
+            }
             append(buildCommentLine(ext, "Code begins below:")).append("\n")
         }.toString()
 
-        val combinedPrefix = extraContext.toString() + currentFileHeader + rawPrefix
+        val combinedPrefix = extraContext.toString() + currentFileHeader + modelPrefix
         val finalPrefix = if (combinedPrefix.length > maxContext) {
-            val prefixCode = rawPrefix.takeLast(maxContext - extraContext.length - currentFileHeader.length)
-            extraContext.toString() + currentFileHeader + prefixCode
+            val allowedRawLength = maxContext - extraContext.length - currentFileHeader.length
+            if (allowedRawLength > 0) {
+                extraContext.toString() + currentFileHeader + modelPrefix.takeLast(allowedRawLength)
+            } else {
+                modelPrefix.takeLast(maxContext) // 如果头部占满，则优先保证当前代码
+            }
         } else {
             combinedPrefix
         }
 
-        var trimmedSuffix = balancedSuffix.trimStart(' ', '\t', '\n', '\r')
-        if (trimmedSuffix.length > maxContext / 4) {
-            trimmedSuffix = trimmedSuffix.substring(0, maxContext / 4)
-        }
+        val finalSuffix = balancedSuffix.take(maxContext / 4)
 
-        return FIMContext(finalPrefix, trimmedSuffix, isSingleLine, rawPrefix, rawSuffix)
+        return FIMContext(finalPrefix, finalSuffix, isSingleLine, rawPrefix, rawSuffix)
     }
 
     // 多语言严格闭合注释适配器

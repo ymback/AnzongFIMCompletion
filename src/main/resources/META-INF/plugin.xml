@@ -1,8 +1,12 @@
 <idea-plugin>
     <id>gov.anzong.fim.completion</id>
     <name>AnzongFIMCompletion</name>
-    <vendor email="admin@anzong.gov" url="https://anzong.gov">Anzong</vendor>
-    <description>Local LLM FIM Inline Code Completion with Multi-File Context.</description>
+    <vendor email="webmaster@myauth.us" url="https://myauth.us">Shiori Takei</vendor>
+    <description><![CDATA[
+    <b>AnzongFIM</b> brings private, lightning-fast AI code completion to your JetBrains IDE.
+    Features <b>Local LLM FIM (Fill-in-the-Middle)</b> inline assistance powered by Ollama,
+    enhanced with <b>Multi-File Context</b> awareness to keep your code secure and your workflow seamless.
+]]></description>
 
     <!-- 兼容 2024.2 (242) 到未来的所有版本 -->
     <idea-version since-build="242.0" until-build="999.*"/>

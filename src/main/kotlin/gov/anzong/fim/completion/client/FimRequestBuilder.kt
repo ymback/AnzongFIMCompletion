@@ -36,7 +36,7 @@ object FimRequestBuilder {
                     "prompt" to prefix,
                     "suffix" to suffix,
                     "stream" to false,
-                    "raw" to true, // 保持 raw=true，防止 Ollama 强行插入 Chat 聊天模板
+                    "raw" to false,
                     "options" to mapOf(
                         "num_predict" to maxTokens,
                         "temperature" to 0.1,

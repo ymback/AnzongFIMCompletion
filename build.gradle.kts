@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "gov.anzong.fim"
-version = "1.0.0"
+version = "1.0.1"
 // 插件配置：版本兼容范围写在这里
 intellijPlatform {
     pluginConfiguration {
