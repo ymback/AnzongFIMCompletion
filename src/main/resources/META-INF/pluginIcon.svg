@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+    <defs>
+        <!-- 背景圆角渐变：高级深邃蓝紫科技感 -->
+        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#1E1E2E"/>
+            <stop offset="100%" stop-color="#11111B"/>
+        </linearGradient>
+
+        <!-- AI 光效渐变：明亮的青蓝色到紫色 -->
+        <linearGradient id="aiGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#89B4FA"/>
+            <stop offset="100%" stop-color="#CBA6F7"/>
+        </linearGradient>
+
+        <!-- 幽灵文本透明虚线效果 -->
+        <linearGradient id="ghostGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#F9E2AF" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#F9E2AF" stop-opacity="0.3"/>
+        </linearGradient>
+    </defs>
+
+    <!-- 图标底板：圆角正方形 -->
+    <rect x="2" y="2" width="36" height="36" rx="8" fill="url(#bgGrad)" stroke="#313244" stroke-width="1.5"/>
+
+    <!-- 左侧标签符号：< -->
+    <path d="M12 13L7 20L12 27" stroke="url(#aiGrad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- 右侧标签符号：> -->
+    <path d="M28 13L33 20L28 27" stroke="url(#aiGrad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- 中间核心：FIM 智能填充线（模拟代码与 AI 生成的灰色/黄色幽灵文本效果） -->
+    <line x1="16" y1="20" x2="24" y2="20" stroke="url(#ghostGrad)" stroke-width="2.5" stroke-linecap="round"/>
+
+    <!-- AI 核心闪烁光点 -->
+    <circle cx="20" cy="20" r="2" fill="#FAB387"/>
+</svg>

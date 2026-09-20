@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>gov.anzong.fim.completion</id>
+    <name>AnzongFIMCompletion</name>
+    <vendor email="admin@anzong.gov" url="https://anzong.gov">Anzong</vendor>
+    <description>Local LLM FIM Inline Code Completion with Multi-File Context.</description>
+
+    <!-- 兼容 2024.2 (242) 到未来的所有版本 -->
+    <idea-version since-build="242.0" until-build="999.*"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="gov.anzong.fim.completion.settings.AnzongSettingsState"/>
+        <applicationConfigurable parentId="tools"
+                                 instance="gov.anzong.fim.completion.settings.AnzongSettingsConfigurable"
+                                 id="gov.anzong.fim.completion.settings.AnzongSettingsConfigurable"
+                                 displayName="Anzong FIM Completion"/>
+
+
+        <inline.completion.provider implementation="gov.anzong.fim.completion.provider.AnzongFIMCompletionProvider"
+                                    id="AnzongFIM"/>
+
+        <postStartupActivity implementation="gov.anzong.fim.completion.startup.ForceDisableBuiltInCompletionActivity"/>
+    </extensions>
+</idea-plugin>
