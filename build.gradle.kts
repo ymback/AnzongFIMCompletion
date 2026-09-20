@@ -8,7 +8,15 @@ plugins {
 
 group = "gov.anzong.fim"
 version = "1.0.0"
-
+// 插件配置：版本兼容范围写在这里
+intellijPlatform {
+    pluginConfiguration {
+        ideaVersion {
+            sinceBuild.set("242")
+            untilBuild.set("999.*")
+        }
+    }
+}
 dependencies {
     intellijPlatform {
         intellijIdeaCommunity("2024.2.1")

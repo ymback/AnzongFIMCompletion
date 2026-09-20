@@ -3,6 +3,7 @@ package gov.anzong.fim.completion.provider
 import com.google.gson.Gson
 import com.intellij.codeInsight.inline.completion.*
 import com.intellij.codeInsight.inline.completion.elements.InlineCompletionGrayTextElement
+import com.intellij.codeInsight.inline.completion.elements.InlineCompletionSkipTextElement
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionSuggestion
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionVariant
 import gov.anzong.fim.completion.client.*
@@ -67,11 +68,26 @@ class AnzongFIMCompletionProvider : InlineCompletionProvider {
 
                     if (!coroutineContext.isActive) return@flow
 
-                    // 后处理清洗（包含之前做的大括号防幻觉平衡）
-                    val cleanCode = CompletionPostProcessor.cleanCompletion(rawGeneratedCode, context.suffix)
+                    val cleanCompletion = CompletionPostProcessor.cleanCompletion(
+                        rawGeneratedCode,
+                        context.localPrefix,
+                        context.localSuffix
+                    )
 
-                    if (cleanCode.isNotBlank()) {
-                        emit(InlineCompletionGrayTextElement(cleanCode))
+                    val skippedSuffix = cleanCompletion.skippedSuffix
+                    if (skippedSuffix.isNotEmpty()) {
+                        if (offset > editor.document.textLength) return@flow
+                        val currentSuffix = editor.document.charsSequence
+                            .subSequence(offset, editor.document.textLength)
+                            .toString()
+                        if (!currentSuffix.startsWith(skippedSuffix)) return@flow
+                    }
+
+                    cleanCompletion.segments.forEach { segment ->
+                        when (segment) {
+                            is CompletionPostProcessor.Segment.Insert -> emit(InlineCompletionGrayTextElement(segment.text))
+                            is CompletionPostProcessor.Segment.Skip -> emit(InlineCompletionSkipTextElement(segment.text))
+                        }
                     }
                 })
 
@@ -84,7 +100,7 @@ class AnzongFIMCompletionProvider : InlineCompletionProvider {
         return suspendCancellableCoroutine { continuation ->
             val requestBuilder = Request.Builder().url(settings.finalEndpoint)
 
-            settings.apiKey?.takeIf { it.isNotBlank() }?.let {
+            settings.apiKey.takeIf { it.isNotBlank() }?.let {
                 requestBuilder.addHeader("Authorization", "Bearer $it")
             }
 

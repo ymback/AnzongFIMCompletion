@@ -12,7 +12,13 @@ import com.intellij.psi.PsiNamedElement
 import gov.anzong.fim.completion.settings.AnzongSettingsState
 
 object ContextManager {
-    data class FIMContext(val prefix: String, val suffix: String, val isSingleLine: Boolean)
+    data class FIMContext(
+        val prefix: String,
+        val suffix: String,
+        val isSingleLine: Boolean,
+        val localPrefix: String,
+        val localSuffix: String
+    )
 
     fun buildFIMContext(project: Project, editor: Editor, offset: Int): FIMContext {
         val settings = AnzongSettingsState.instance
@@ -124,7 +130,7 @@ object ContextManager {
             trimmedSuffix = trimmedSuffix.substring(0, maxContext / 4)
         }
 
-        return FIMContext(finalPrefix, trimmedSuffix, isSingleLine)
+        return FIMContext(finalPrefix, trimmedSuffix, isSingleLine, rawPrefix, rawSuffix)
     }
 
     // 多语言严格闭合注释适配器

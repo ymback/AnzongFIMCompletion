@@ -2,104 +2,424 @@ package gov.anzong.fim.completion.util
 
 object CompletionPostProcessor {
 
-    fun cleanCompletion(rawCode: String, suffix: String): String {
-        var text = rawCode
-            .replace("<|fim_middle|>", "")
-            .replace("<|endoftext|>", "")
-            .replace(Regex("^```[a-zA-Z]*\\n"), "")
-            .replace(Regex("```$"), "")
-            .removeSuffix("\n```")
+    sealed interface Segment {
+        val text: String
 
-        if (text.isBlank()) return ""
+        data class Insert(override val text: String) : Segment
+        data class Skip(override val text: String) : Segment
+    }
 
-        // 1. 基础字符串重叠消除 (防完全一致的代码段重叠)
-        val cleanSuffix = suffix.trimStart()
-        if (cleanSuffix.isNotEmpty()) {
-            val maxOverlapCheck = minOf(text.length, cleanSuffix.length, 50)
-            for (len in maxOverlapCheck downTo 1) {
-                val textTail = text.takeLast(len)
-                val suffixHead = cleanSuffix.take(len)
-                if (textTail == suffixHead) {
-                    text = text.dropLast(len)
-                    break
+    data class CleanCompletionResult(val segments: List<Segment>) {
+        val visibleText: String
+            get() = segments.filterIsInstance<Segment.Insert>().joinToString("") { it.text }
+
+        val skippedSuffix: String
+            get() = segments.filterIsInstance<Segment.Skip>().joinToString("") { it.text }
+    }
+
+    private enum class ParseState {
+        CODE,
+        SINGLE_QUOTE,
+        DOUBLE_QUOTE,
+        BACKTICK,
+        TRIPLE_SINGLE_QUOTE,
+        TRIPLE_DOUBLE_QUOTE,
+        LINE_COMMENT,
+        BLOCK_COMMENT
+    }
+
+    private enum class DelimiterOrigin {
+        PREFIX,
+        GENERATED
+    }
+
+    private data class Delimiter(
+        val opener: Char,
+        val origin: DelimiterOrigin
+    )
+
+    private data class PrefixAnalysis(
+        val delimiters: MutableList<Delimiter>,
+        val reliable: Boolean
+    )
+
+    fun cleanCompletion(
+        rawCode: String,
+        localPrefix: String,
+        localSuffix: String
+    ): CleanCompletionResult {
+        val text = trimModelArtifacts(rawCode)
+        if (text.isBlank()) return CleanCompletionResult(emptyList())
+
+        val prefixAnalysis = analyzePrefix(localPrefix)
+        if (!prefixAnalysis.reliable) {
+            return CleanCompletionResult(listOf(Segment.Insert(text)))
+        }
+
+        val segments = mutableListOf<Segment>()
+        val delimiters = prefixAnalysis.delimiters
+        var suffixOffset = 0
+        var state = ParseState.CODE
+        var index = 0
+
+        fun appendInsert(value: String) {
+            if (value.isEmpty()) return
+            val last = segments.lastOrNull()
+            if (last is Segment.Insert) {
+                segments[segments.lastIndex] = Segment.Insert(last.text + value)
+            } else {
+                segments.add(Segment.Insert(value))
+            }
+        }
+
+        fun appendSkip(value: String) {
+            if (value.isEmpty()) return
+            val last = segments.lastOrNull()
+            if (last is Segment.Skip) {
+                segments[segments.lastIndex] = Segment.Skip(last.text + value)
+            } else {
+                segments.add(Segment.Skip(value))
+            }
+        }
+
+        while (index < text.length) {
+            when (state) {
+                ParseState.CODE -> {
+                    when {
+                        text.startsWith("//", index) -> {
+                            appendInsert("//")
+                            state = ParseState.LINE_COMMENT
+                            index += 2
+                        }
+
+                        text.startsWith("/*", index) -> {
+                            appendInsert("/*")
+                            state = ParseState.BLOCK_COMMENT
+                            index += 2
+                        }
+
+                        text.startsWith("\"\"\"", index) -> {
+                            appendInsert("\"\"\"")
+                            state = ParseState.TRIPLE_DOUBLE_QUOTE
+                            index += 3
+                        }
+
+                        text.startsWith("'''", index) -> {
+                            appendInsert("'''")
+                            state = ParseState.TRIPLE_SINGLE_QUOTE
+                            index += 3
+                        }
+
+                        text[index] == '\'' -> {
+                            appendInsert("'")
+                            state = ParseState.SINGLE_QUOTE
+                            index++
+                        }
+
+                        text[index] == '"' -> {
+                            appendInsert("\"")
+                            state = ParseState.DOUBLE_QUOTE
+                            index++
+                        }
+
+                        text[index] == '`' -> {
+                            appendInsert("`")
+                            state = ParseState.BACKTICK
+                            index++
+                        }
+
+                        text[index] in OPENERS -> {
+                            val opener = text[index]
+                            delimiters.add(Delimiter(opener, DelimiterOrigin.GENERATED))
+                            appendInsert(opener.toString())
+                            index++
+                        }
+
+                        text[index] in CLOSERS -> {
+                            val closer = text[index]
+                            val top = delimiters.lastOrNull()
+                            if (top != null && matchingCloser(top.opener) == closer) {
+                                delimiters.removeAt(delimiters.lastIndex)
+                                val suffixMatchEnd = if (top.origin == DelimiterOrigin.PREFIX) {
+                                    findSuffixCloserEnd(localSuffix, suffixOffset, closer)
+                                } else {
+                                    -1
+                                }
+                                if (suffixMatchEnd >= 0) {
+                                    if (closer == '}') break
+                                    appendSkip(localSuffix.substring(suffixOffset, suffixMatchEnd))
+                                    suffixOffset = suffixMatchEnd
+                                } else {
+                                    appendInsert(closer.toString())
+                                }
+                            } else if (top == null) {
+                                break
+                            } else {
+                                appendInsert(closer.toString())
+                            }
+                            index++
+                        }
+
+                        text[index] == ';' &&
+                            localSuffix.getOrNull(suffixOffset) == ';' &&
+                            delimiters.none { it.origin == DelimiterOrigin.GENERATED } &&
+                            delimiters.none { it.opener == '(' || it.opener == '[' } -> {
+                            appendSkip(";")
+                            suffixOffset++
+                            index++
+                        }
+
+                        else -> {
+                            appendInsert(text[index].toString())
+                            index++
+                        }
+                    }
+                }
+
+                ParseState.SINGLE_QUOTE -> {
+                    index = appendQuotedCharacter(text, index, '\'', ::appendInsert) {
+                        state = ParseState.CODE
+                    }
+                }
+
+                ParseState.DOUBLE_QUOTE -> {
+                    index = appendQuotedCharacter(text, index, '"', ::appendInsert) {
+                        state = ParseState.CODE
+                    }
+                }
+
+                ParseState.BACKTICK -> {
+                    index = appendQuotedCharacter(text, index, '`', ::appendInsert) {
+                        state = ParseState.CODE
+                    }
+                }
+
+                ParseState.TRIPLE_SINGLE_QUOTE -> {
+                    if (text.startsWith("'''", index)) {
+                        appendInsert("'''")
+                        state = ParseState.CODE
+                        index += 3
+                    } else {
+                        appendInsert(text[index].toString())
+                        index++
+                    }
+                }
+
+                ParseState.TRIPLE_DOUBLE_QUOTE -> {
+                    if (text.startsWith("\"\"\"", index)) {
+                        appendInsert("\"\"\"")
+                        state = ParseState.CODE
+                        index += 3
+                    } else {
+                        appendInsert(text[index].toString())
+                        index++
+                    }
+                }
+
+                ParseState.LINE_COMMENT -> {
+                    val character = text[index]
+                    appendInsert(character.toString())
+                    if (character == '\n') state = ParseState.CODE
+                    index++
+                }
+
+                ParseState.BLOCK_COMMENT -> {
+                    if (text.startsWith("*/", index)) {
+                        appendInsert("*/")
+                        state = ParseState.CODE
+                        index += 2
+                    } else {
+                        appendInsert(text[index].toString())
+                        index++
+                    }
                 }
             }
         }
 
-        // 2. 核心优化：智能符号闭合平衡 (Smart Closure Balancing)
-        // 专门对付模型无视下文，强行自己补全 } 或 ) 或 ; 的顽疾
-        text = trimExcessClosures(text, suffix)
+        val result = CleanCompletionResult(segments)
+        return if (result.visibleText.isBlank()) CleanCompletionResult(emptyList()) else result
+    }
 
-        // 3. 截断极其离谱的多余结构闭合 (防兜底)
-        val doubleBraceIndex = text.indexOf("\n}\n}\n")
-        if (doubleBraceIndex != -1) {
-            text = text.substring(0, doubleBraceIndex + 2)
+    private fun trimModelArtifacts(rawCode: String): String {
+        var text = rawCode
+        if (text.startsWith("<|fim_middle|>")) {
+            text = text.removePrefix("<|fim_middle|>")
         }
 
-        // 如果清洗完之后只剩下空行或空格了，直接返回空串，不渲染毫无意义的灰色方块
-        if (text.trim().isEmpty()) {
-            return ""
+        val stopIndex = listOf("<|endoftext|>", "<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>")
+            .map { text.indexOf(it) }
+            .filter { it >= 0 }
+            .minOrNull()
+        if (stopIndex != null) {
+            text = text.substring(0, stopIndex)
+        }
+
+        text = text.replaceFirst(Regex("^```[a-zA-Z0-9_+.-]*\\r?\\n"), "")
+        val closingFenceIndex = text.indexOf("\n```")
+        if (closingFenceIndex >= 0) {
+            text = text.substring(0, closingFenceIndex)
+        } else if (text.trimEnd().endsWith("```")) {
+            text = text.trimEnd().removeSuffix("```").trimEnd()
         }
 
         return text
     }
 
-    private fun trimExcessClosures(generatedCode: String, suffix: String): String {
-        var text = generatedCode
-        val suffixTrimmed = suffix.trimStart()
+    private fun analyzePrefix(prefix: String): PrefixAnalysis {
+        val delimiters = mutableListOf<Delimiter>()
+        var state = ParseState.CODE
+        var index = 0
 
-        // --- A. 处理大括号 } 的幻觉 ---
-        // 统计生成代码中大括号的“净闭合数”。
-        // 如果 netBraces < 0，说明模型越界了，它试图闭合本不该由它闭合的外部代码块。
-        var netBraces = text.count { it == '{' } - text.count { it == '}' }
+        while (index < prefix.length) {
+            when (state) {
+                ParseState.CODE -> {
+                    when {
+                        prefix.startsWith("//", index) -> {
+                            state = ParseState.LINE_COMMENT
+                            index += 2
+                        }
 
-        // 探测下文本来就有多少个连续的 }
-        var suffixBraceMatchCount = 0
-        var tempSuffix = suffixTrimmed
-        while (tempSuffix.startsWith("}")) {
-            suffixBraceMatchCount++
-            tempSuffix = tempSuffix.substring(1).trimStart()
-        }
+                        prefix.startsWith("/*", index) -> {
+                            state = ParseState.BLOCK_COMMENT
+                            index += 2
+                        }
 
-        // 如果模型生成了多余的 }，且真实下文本来就有 }，果断把模型生成的 } 吃掉！
-        while (netBraces < 0 && suffixBraceMatchCount > 0 && text.trimEnd().endsWith("}")) {
-            val lastBraceIndex = text.lastIndexOf('}')
-            if (lastBraceIndex != -1) {
-                text = text.substring(0, lastBraceIndex)
-                netBraces++
-                suffixBraceMatchCount--
-            } else {
-                break
+                        prefix.startsWith("\"\"\"", index) -> {
+                            state = ParseState.TRIPLE_DOUBLE_QUOTE
+                            index += 3
+                        }
+
+                        prefix.startsWith("'''", index) -> {
+                            state = ParseState.TRIPLE_SINGLE_QUOTE
+                            index += 3
+                        }
+
+                        prefix[index] == '\'' -> {
+                            state = ParseState.SINGLE_QUOTE
+                            index++
+                        }
+
+                        prefix[index] == '"' -> {
+                            state = ParseState.DOUBLE_QUOTE
+                            index++
+                        }
+
+                        prefix[index] == '`' -> {
+                            state = ParseState.BACKTICK
+                            index++
+                        }
+
+                        prefix[index] in OPENERS -> {
+                            delimiters.add(Delimiter(prefix[index], DelimiterOrigin.PREFIX))
+                            index++
+                        }
+
+                        prefix[index] in CLOSERS -> {
+                            val top = delimiters.lastOrNull()
+                            if (top == null || matchingCloser(top.opener) != prefix[index]) {
+                                return PrefixAnalysis(delimiters, false)
+                            }
+                            delimiters.removeAt(delimiters.lastIndex)
+                            index++
+                        }
+
+                        else -> index++
+                    }
+                }
+
+                ParseState.SINGLE_QUOTE -> index = skipQuotedCharacter(prefix, index, '\'') {
+                    state = ParseState.CODE
+                }
+
+                ParseState.DOUBLE_QUOTE -> index = skipQuotedCharacter(prefix, index, '"') {
+                    state = ParseState.CODE
+                }
+
+                ParseState.BACKTICK -> index = skipQuotedCharacter(prefix, index, '`') {
+                    state = ParseState.CODE
+                }
+
+                ParseState.TRIPLE_SINGLE_QUOTE -> {
+                    if (prefix.startsWith("'''", index)) {
+                        state = ParseState.CODE
+                        index += 3
+                    } else {
+                        index++
+                    }
+                }
+
+                ParseState.TRIPLE_DOUBLE_QUOTE -> {
+                    if (prefix.startsWith("\"\"\"", index)) {
+                        state = ParseState.CODE
+                        index += 3
+                    } else {
+                        index++
+                    }
+                }
+
+                ParseState.LINE_COMMENT -> {
+                    if (prefix[index] == '\n') state = ParseState.CODE
+                    index++
+                }
+
+                ParseState.BLOCK_COMMENT -> {
+                    if (prefix.startsWith("*/", index)) {
+                        state = ParseState.CODE
+                        index += 2
+                    } else {
+                        index++
+                    }
+                }
             }
         }
 
-        // --- B. 处理圆括号 ) 的幻觉 ---
-        // 常见于 if (xxx<光标>) 或 println(xxx<光标>) 的情况
-        var netParens = text.count { it == '(' } - text.count { it == ')' }
-        var suffixParenMatchCount = 0
-        tempSuffix = suffixTrimmed
-        while (tempSuffix.startsWith(")")) {
-            suffixParenMatchCount++
-            tempSuffix = tempSuffix.substring(1).trimStart()
-        }
-
-        while (netParens < 0 && suffixParenMatchCount > 0 && text.trimEnd().endsWith(")")) {
-            val lastParenIndex = text.lastIndexOf(')')
-            if (lastParenIndex != -1) {
-                text = text.substring(0, lastParenIndex)
-                netParens++
-                suffixParenMatchCount--
-            } else {
-                break
-            }
-        }
-
-        // --- C. 处理分号 ; 的幻觉 ---
-        // 常见于 int a = 10<光标>;
-        if (text.trimEnd().endsWith(";") && suffixTrimmed.startsWith(";")) {
-            text = text.substring(0, text.lastIndexOf(";"))
-        }
-
-        return text
+        return PrefixAnalysis(delimiters, state == ParseState.CODE)
     }
+
+    private fun appendQuotedCharacter(
+        text: String,
+        index: Int,
+        quote: Char,
+        append: (String) -> Unit,
+        close: () -> Unit
+    ): Int {
+        val character = text[index]
+        append(character.toString())
+        if (character == '\\' && index + 1 < text.length) {
+            append(text[index + 1].toString())
+            return index + 2
+        }
+        if (character == quote) close()
+        return index + 1
+    }
+
+    private fun skipQuotedCharacter(
+        text: String,
+        index: Int,
+        quote: Char,
+        close: () -> Unit
+    ): Int {
+        val character = text[index]
+        if (character == '\\' && index + 1 < text.length) return index + 2
+        if (character == quote) close()
+        return index + 1
+    }
+
+    private fun findSuffixCloserEnd(suffix: String, offset: Int, closer: Char): Int {
+        var index = offset
+        while (index < suffix.length && suffix[index].isWhitespace()) {
+            index++
+        }
+        return if (suffix.getOrNull(index) == closer) index + 1 else -1
+    }
+
+    private fun matchingCloser(opener: Char): Char = when (opener) {
+        '(' -> ')'
+        '[' -> ']'
+        '{' -> '}'
+        else -> error("Unsupported delimiter: $opener")
+    }
+
+    private val OPENERS = setOf('(', '[', '{')
+    private val CLOSERS = setOf(')', ']', '}')
 }
